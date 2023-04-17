@@ -1,0 +1,394 @@
+---
+title: "Car Sale Advertisements"
+author: "Joaquin Sanchez Ibarra"
+date: "2023-04-16"
+output: html_document
+---
+
+Load packages
+
+```{r}
+pacman::p_load(tidyverse, car, DataExplorer, data.table, randomForest, missForest, glmnet, caret, doParallel, foreach)
+```
+
+Car Price data.
+```{r}
+df <- fread("./data/car_ad.csv")
+```
+
+
+Convert character to factors
+```{r}
+df1 <- df %>% mutate(
+          car = as.factor(car),
+          body = as.factor(body),
+          engType = as.factor(engType),
+          registration = as.factor(registration),
+          model = as.factor(model),
+          drive = as.factor(drive))
+df1
+
+str(df1)
+```
+
+number of categories
+
+```{r}
+lapply(df1,function(x) { length(levels(x))})
+df1
+```
+
+Set empty to NA for all factor variables
+
+```{r}
+for(i in names(df1)){
+  
+  if (is.factor(df1[[i]])){
+   
+    levels(df1[[i]])[levels(df1[[i]]) == ""] = NA
+    df1[[i]]<- factor(df1[[i]])
+    
+  }
+}
+```
+
+Check for missing data
+
+```{r}
+plot_missing(df1)
+
+# number of missing values by variable
+lapply(df1,function(x) { length(which(is.na(x)))})
+```
+
+Imputation of NA values using `missForest` package
+
+```{r}
+rf_na <- missForest(df1[,-c(1,9)],
+                    ntree = 100,
+                    variablewise = T,
+                    verbose= T,
+                    mtry = round(ncol(df1[,-c(1,9)])/3))
+```
+
+```{r}
+# df2 <- rf_na$ximp %>% 
+#   mutate(car = df1$car,
+#          model = df1$model)
+
+df2 <- rf_na$ximp
+```
+
+verify missing values
+
+```{r}
+plot_missing(df2)
+```
+
+
+Remove price where value is zero
+
+```{r}
+summary(df2)
+quantile(df2$price)
+df3 <- df2[-which(df2$price == 0),]
+```
+
+```{r}
+summary(df3)
+quantile(df3$price)
+```
+
+# linear regression
+
+
+price is skewed to the right (log transformation)
+
+```{r}
+scatterplotMatrix(~price + mileage + engV, data = df3, col = "black")
+
+df3 %>% 
+  ggplot(aes(body, price )) + 
+  geom_boxplot()
+
+# engine type
+df3 %>% 
+  ggplot(aes(engV, log(price), fill = drive)) + 
+  geom_boxplot()
+```
+
+
+# Added Variables plots partial regression plot
+
+```{r}
+fit <- lm(price ~ ., data = df3)
+summary(fit)
+
+avPlots(fit)
+```
+
+Used power transformation on predictor then response
+
+Add small constant to mileage to use the power transformation since some values are zero
+```{r}
+summary(df3)
+pt <- powerTransform(cbind(df3$mileage+.001, df3$engV) ~ 1 )
+summary(pt)
+```
+
+
+Result: Optimal lambda is -0.07. However, used log transformation for easier interpretation. (optimal values is close to zero)
+```{r}
+summary(as.numeric(df3$engV)^(-0.5))
+engV <-  as.numeric(df3$engV)^(-0.5)
+
+
+powerTransform(df3$price ~ df3$body + sqrt(df3$mileage +0.001) + engV + df3$engType + df3$registration + df3$year + df3$drive ) %>% 
+  summary()
+```
+
+
+```{r}
+fit1 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV + engType + registration + year + drive, data = df3)
+summary(fit1)
+```
+
+# Assumptions of transformed model
+
+check for multicollinearity: Result: VIF are less than 5 for all values. No issue with  multicollinearity.
+```{r}
+vif(fit1)
+```
+
+There are 4 high leverage points
+```{r}
+n <- nrow(df3)
+p <- ncol(df3)
+
+# residuals
+plot(hatvalues(fit1), rstandard(fit1),
+xlab="Leverage", ylab="Standardized Residuals")
+abline(v = 4*(p+1)/n , lty = 2, lwd = 2, col = "red")
+abline(h = c(-4,4), lty = 2, lwd = 2, col = "blue")
+
+```
+
+High leverage points
+```{r}
+df3[which(hatvalues(fit1) >4*(p+1)/n & abs(rstandard(fit1)) >4 ,)]
+```
+
+```{r}
+cooks <- cooks.distance(fit1)
+index <- which(cooks > 4/ (n - p - 1))
+influenceIndexPlot(fit1,vars = c("hat", "Cook"),id = TRUE)
+```
+
+
+```{r}
+df4 <- df3[-index,]
+fit2 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV + engType + registration + year + drive, data = df4)
+summary(fit2)
+```
+ 
+
+
+Standardize residuals vs year: no patterns by years
+
+```{r}
+plot(rstandard(fit1) ~ df3$year, cex = .5,
+    xlab="Years",
+    ylab="Standardized Residuals")
+```
+
+QQplot: Data points deviate at the end of tails
+```{r}
+car::qqPlot(rstandard(fit1))
+```
+
+
+Summary: Adjusted R-squared: 0.7044. About 70% of the variability can be explain by the model. s
+
+```{r}
+summary(fit1)
+```
+
+
+# Model Predictions
+
+
+train and test using lasso regression
+
+```{r}
+set.seed(1)
+train_index <- createDataPartition(df3$price, p = .7, list = FALSE)
+train <- df3[train_index,]
+test <- df3[-train_index,]
+```
+
+
+
+```{r}
+
+# cross-validation method
+control <- trainControl(method = "cv", number = 10)
+tune <- expand.grid(alpha = 1, lambda = seq(0.01, 1, length = 100))
+
+model <- train(log(price) ~ body + sqrt(mileage + 0.001) + engV + 
+    engType + registration + year + drive,
+                      data = train,
+                      method = "glmnet",
+                      trControl = control,
+                      tuneGrid = tune)
+```
+
+
+Prediction results using lasso model
+
+```{r}
+pred <- predict(model , newdata = test)
+```
+
+
+```{r}
+pacman::p_load(Metrics)
+rmse <- sqrt(mean((test$price - exp(pred) )^2)) 
+mae <- Metrics::mae(test$price, exp(pred))
+
+cat("Residual Mean Square error: ", round(rmse,2), "\n",
+      "Mean Absolute error: ", round(mae,2))
+
+```
+
+Summary: The model has MAE of 6193.93. Meaning on average the model prediction of the price of the car is off by $6193.93. 
+
+Note: MAE is less sensitive to outliers than other metrics like RMSE ($14494.98)
+
+
+train and test splits
+```{r}
+set.seed(1)
+train_index <- createDataPartition(df3$price, p = .7, list = FALSE)
+train <- df3[train_index,]
+test <- df3[-train_index,]
+```
+
+
+```{r}
+cl <- makeCluster(detectCores())
+```
+
+```{r}
+registerDoParallel(cl)
+```
+
+```{r}
+# define models
+algorithms <- list(
+  "glmnet" = list(method = "glmnet"),
+  "glm" = list(method = "glm"),
+  "rf" = list(method = "rf")
+)
+algorithms <- c("glmnet", "glm", "rf")
+
+
+# cross-validation method
+control <- trainControl(method = "cv", number = 10)
+
+
+# tuning parameters
+tune_glmnet <- expand.grid(alpha = 0, lambda = seq(0.01, 1, length = 100))
+rf_grid <- expand.grid(mtry = 1:4)
+param_grids <- list(glmnet = tune_glmnet, glm = glm_grid, rf = rf_grid)
+
+# train model
+results <- foreach(alg = algorithms ,.packages = "caret", .combine = "rbind") %dopar% {
+  
+  if (alg == "glm"){
+    model <- train(log(price) ~ body + sqrt(mileage + 0.001) + engV + 
+    engType + registration + year + drive,
+    data = train,
+    method = alg,
+    trControl = control)
+  } else {
+    model <- train(log(price) ~ body + sqrt(mileage + 0.001) + engV + 
+    engType + registration + year + drive,
+    data = train,
+    method = alg,
+    trControl = control,
+    tuneGrid = param_grids[[alg]])
+  }
+  
+  # Extract model performance metrics
+  if (alg == "rf"){
+    model_metrics <- list(
+    model = model,
+    RMSE = min(model$results$RMSE),
+    R2 = max(model$results$Rsquared),
+    RMAE = min(model$results$MAE) )
+  } else {
+    model_metrics <- list(
+    model = coef(model$finalModel),
+    RMSE = min(model$results$RMSE),
+    R2 = max(model$results$Rsquared),
+    RMAE = min(model$results$MAE)
+  )
+  }
+  
+  list(algorithm = alg, model = model, model_metrics = model_metrics)
+  
+  
+  # Return model performance metrics
+  model_metrics
+}
+
+```
+
+random forest has the best metric on the training data
+```{r}
+results
+```
+
+
+Prediction using the best model based on the metric
+
+```{r}
+pred_rf <- predict(results[3], newdata = test) %>% unlist()
+summary(pred_rf)
+```
+
+
+metric for random forest model predictions
+```{r}
+rmse <- sqrt(mean( (test$price - exp(pred_rf))  ^2) )
+rmae <- mean(abs(test$price - exp(pred_rf)))
+```
+
+
+```{r}
+table <- data.frame(
+"Residual Mean Square error" =  round(rmse,2),
+      "Mean Absolute error" =  round(mae,2))
+
+knitr::kable(table,align = "lccccc",caption = "Random Forest Prediction Results")
+
+```
+
+
+```{r}
+# Stop the parallel backend
+stopCluster(cl)
+```
+
+
+Run after using DoParallel
+```{r}
+unregister_dopar <- function() {
+  env <- foreach:::.foreachGlobals
+  rm(list=ls(name=env), pos=env)
+}
+
+unregister_dopar()
+```
+
+
