@@ -409,7 +409,7 @@ knitr::kable(table,align = "lccccc",caption = "Random Forest Prediction Results"
 
 Summary: The model MAE is 3575.62. Meaning on average the Random Forest model prediction of the price of the car is off by $3575.62. 
 
-
+ 
 ```{r}
 # Stop the parallel backend
 stopCluster(cl)
