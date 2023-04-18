@@ -8,16 +8,16 @@ output: html_document
 Load packages
 
 ```{r}
-pacman::p_load(tidyverse, car, DataExplorer, data.table, randomForest, missForest, glmnet, caret, doParallel, foreach)
+pacman::p_load(tidyverse, car, DataExplorer, data.table, randomForest, missForest, glmnet, caret, doParallel, foreach, Metrics)
 ```
 
-Car Price data.
+Read Car Price data.
 ```{r}
 df <- fread("./data/car_ad.csv")
 ```
 
 
-Convert character to factors
+Convert character variables to factors
 ```{r}
 df1 <- df %>% mutate(
           car = as.factor(car),
@@ -26,43 +26,40 @@ df1 <- df %>% mutate(
           registration = as.factor(registration),
           model = as.factor(model),
           drive = as.factor(drive))
-df1
+
+df1$engType <- fct_relevel(df1$engType, "Diesel", "Petrol","Other", "Gas")
 
 str(df1)
 ```
 
-number of categories
-
+Calculate the number of categories for each factor
 ```{r}
 lapply(df1,function(x) { length(levels(x))})
 df1
 ```
 
-Set empty to NA for all factor variables
-
+Set empty values to NA for all factor variables
 ```{r}
 for(i in names(df1)){
   
   if (is.factor(df1[[i]])){
-   
     levels(df1[[i]])[levels(df1[[i]]) == ""] = NA
     df1[[i]]<- factor(df1[[i]])
-    
   }
 }
 ```
 
-Check for missing data
-
+Check for missing values in the data
 ```{r}
 plot_missing(df1)
+```
 
-# number of missing values by variable
+Number of missing values by variable
+```{r}
 lapply(df1,function(x) { length(which(is.na(x)))})
 ```
 
 Imputation of NA values using `missForest` package
-
 ```{r}
 rf_na <- missForest(df1[,-c(1,9)],
                     ntree = 100,
@@ -75,19 +72,15 @@ rf_na <- missForest(df1[,-c(1,9)],
 # df2 <- rf_na$ximp %>% 
 #   mutate(car = df1$car,
 #          model = df1$model)
-
 df2 <- rf_na$ximp
 ```
 
 verify missing values
-
 ```{r}
 plot_missing(df2)
 ```
 
-
-Remove price where value is zero
-
+Remove price where car value is zero for this project. 
 ```{r}
 summary(df2)
 quantile(df2$price)
@@ -96,14 +89,15 @@ df3 <- df2[-which(df2$price == 0),]
 
 ```{r}
 summary(df3)
-quantile(df3$price)
 ```
 
-# linear regression
+# Multiple Linear Regression
 
+Used Linear regression to find associations between the car price and predictors. 
 
-price is skewed to the right (log transformation)
+## Exploratory data analysis
 
+Based on the scatter plot the car price is skewed to the right. (log transformation may be useful)
 ```{r}
 scatterplotMatrix(~price + mileage + engV, data = df3, col = "black")
 
@@ -118,79 +112,55 @@ df3 %>%
 ```
 
 
-# Added Variables plots partial regression plot
+## Added Variables plots partial regression plot
 
+Loot for important predictors based on the avPlots.
 ```{r}
 fit <- lm(price ~ ., data = df3)
 summary(fit)
-
 avPlots(fit)
 ```
 
-Used power transformation on predictor then response
+# Assumption of Multiple Linear Regression
 
-Add small constant to mileage to use the power transformation since some values are zero
+The assumptions fails. QQplot deviates from at the tail end.  
 ```{r}
-summary(df3)
+par(mfrow = c(1,2))
+plot(fit, which = 2, cex = .5)
+plot(fitted(fit1), rstandard(fit1),
+xlab="Fitted values", ylab="Standardized Residuals", cex = .5)
+```
+## Transformations
+
+Used power transformation on predictors then response. 
+
+Note: Add small constant to `mileage` to use the power transformation since some values are zero.
+```{r}
 pt <- powerTransform(cbind(df3$mileage+.001, df3$engV) ~ 1 )
 summary(pt)
 ```
 
 
 Result: Optimal lambda is -0.07. However, used log transformation for easier interpretation. (optimal values is close to zero)
+
+Transformation the response `Price` by the log transformation.
 ```{r}
-summary(as.numeric(df3$engV)^(-0.5))
 engV <-  as.numeric(df3$engV)^(-0.5)
-
-
 powerTransform(df3$price ~ df3$body + sqrt(df3$mileage +0.001) + engV + df3$engType + df3$registration + df3$year + df3$drive ) %>% 
   summary()
 ```
-
 
 ```{r}
 fit1 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV + engType + registration + year + drive, data = df3)
 summary(fit1)
 ```
 
-# Assumptions of transformed model
+## Assumptions of Transformed model
 
-check for multicollinearity: Result: VIF are less than 5 for all values. No issue with  multicollinearity.
+Check for multicollinearity: VIF are less than 5 for all values. No issue with multicollinearity.
 ```{r}
 vif(fit1)
 ```
-
-There are 4 high leverage points
-```{r}
-n <- nrow(df3)
-p <- ncol(df3)
-
-# residuals
-plot(hatvalues(fit1), rstandard(fit1),
-xlab="Leverage", ylab="Standardized Residuals")
-abline(v = 4*(p+1)/n , lty = 2, lwd = 2, col = "red")
-abline(h = c(-4,4), lty = 2, lwd = 2, col = "blue")
-
-```
-
-High leverage points
-```{r}
-df3[which(hatvalues(fit1) >4*(p+1)/n & abs(rstandard(fit1)) >4 ,)]
-```
-
-```{r}
-cooks <- cooks.distance(fit1)
-index <- which(cooks > 4/ (n - p - 1))
-influenceIndexPlot(fit1,vars = c("hat", "Cook"),id = TRUE)
-```
-
-
-```{r}
-df4 <- df3[-index,]
-fit2 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV + engType + registration + year + drive, data = df4)
-summary(fit2)
-```
- 
 
 
 Standardize residuals vs year: no patterns by years
@@ -206,18 +176,81 @@ QQplot: Data points deviate at the end of tails
 car::qqPlot(rstandard(fit1))
 ```
 
+Check for outliers & leverage points: There are 5 bad leverage points.
+```{r}
+n <- nrow(df3)
+p <- ncol(df3)
+plot(hatvalues(fit1), rstandard(fit1),
+xlab="Leverage", ylab="Standardized Residuals")
+abline(v = 4*(p+1)/n , lty = 2, lwd = 2, col = "red")
+abline(h = c(-4,4), lty = 2, lwd = 2, col = "blue")
+```
 
-Summary: Adjusted R-squared: 0.7044. About 70% of the variability can be explain by the model. s
+
+Bad leverage points data.
+```{r}
+df3[which(hatvalues(fit1) >4*(p+1)/n & abs(rstandard(fit1)) >4 ,)]
+```
+
+Cooks distance for influential points
+```{r}
+cooks <- cooks.distance(fit1)
+index <- which(cooks > 4/ (n - p - 1))
+influenceIndexPlot(fit1,vars = c("hat", "Cook"),id = TRUE)
+```
+
+
+There are many influential points. Run model with and without influential data points.   
+
+
+Model with out influential points.
+```{r}
+df4 <- df3[-index,]
+fit2 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV + engType + registration + year + drive, data = df4)
+summary(fit2)
+```
+
+```{r}
+plot(rstandard(fit2) ~ df4$year, cex = .5,
+    xlab="Years",
+    ylab="Standardized Residuals")
+```
+
+QQplot: Data points deviate at the end of tails
+```{r}
+car::qqPlot(rstandard(fit2))
+```
+
+Check for outliers & leverage points: There are 5 bad leverage points.
+```{r}
+n <- nrow(df4)
+p <- ncol(df4)
+plot(hatvalues(fit2), rstandard(fit2),
+xlab="Leverage", ylab="Standardized Residuals")
+abline(v = 4*(p+1)/n , lty = 2, lwd = 2, col = "red")
+abline(h = c(-4,4), lty = 2, lwd = 2, col = "blue")
+```
+
+
+
+Summary: Adjusted R-squared: 0.7044. About 70% of the variability can be explain by the model that contains all data compare to %76.55 without. Will used the first model since there is a difference in the coefficients and Adjusted R-squared.
+
+Interpretations: The price of a car that uses Gas is 29.99% less, on average, than a car that uses diesel, when all other variables in the model are held constant.
+
+The price of a car that full wheel drive is 85.69% more, on average, than a car that is front wheel drive, when all other variables in the model are held constant.
 
 ```{r}
 summary(fit1)
+-2.999e-01*100 # engine type
+8.569e-01 *100 # drive
 ```
+
 
 
 # Model Predictions
 
 
-train and test using lasso regression
+Train and test using lasso regression.
 
 ```{r}
 set.seed(1)
@@ -227,12 +260,11 @@ test <- df3[-train_index,]
 ```
 
 
-
 ```{r}
 
 # cross-validation method
-control <- trainControl(method = "cv", number = 10)
-tune <- expand.grid(alpha = 1, lambda = seq(0.01, 1, length = 100))
+control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+tune <- expand.grid(alpha = 0, lambda = seq(0.01, 1, length = 100))
 
 model <- train(log(price) ~ body + sqrt(mileage + 0.001) + engV + 
     engType + registration + year + drive,
@@ -243,20 +275,21 @@ model <- train(log(price) ~ body + sqrt(mileage + 0.001) + engV +
 ```
 
 
-Prediction results using lasso model
-
+Prediction results using lasso model on test data
 ```{r}
 pred <- predict(model , newdata = test)
 ```
 
 
 ```{r}
-pacman::p_load(Metrics)
 rmse <- sqrt(mean((test$price - exp(pred) )^2)) 
 mae <- Metrics::mae(test$price, exp(pred))
 
-cat("Residual Mean Square error: ", round(rmse,2), "\n",
-      "Mean Absolute error: ", round(mae,2))
+table <- data.frame(
+"Residual Mean Square error" =  round(rmse,2),
+      "Mean Absolute error" =  round(mae,2))
+
+knitr::kable(table,align = "lccccc",caption = "Random Forest Prediction Results")
 
 ```
 
@@ -265,7 +298,9 @@ Summary: The model has MAE of 6193.93. Meaning on average the model prediction o
 Note: MAE is less sensitive to outliers than other metrics like RMSE ($14494.98)
 
 
-train and test splits
+## train and test using DoParallel
+
+Train and test splits
 ```{r}
 set.seed(1)
 train_index <- createDataPartition(df3$price, p = .7, list = FALSE)
@@ -274,14 +309,14 @@ test <- df3[-train_index,]
 ```
 
 
+Set up to use DoParallel.
 ```{r}
 cl <- makeCluster(detectCores())
-```
-
-```{r}
 registerDoParallel(cl)
 ```
 
+
+Will run multiple models (glmnet, glm, rf) at the same time on the training data.
 ```{r}
 # define models
 algorithms <- list(
@@ -344,24 +379,22 @@ results <- foreach(alg = algorithms ,.packages = "caret", .combine = "rbind") %d
 
 ```
 
-random forest has the best metric on the training data
+Random forest has the best metric on the training data
 ```{r}
-results
+results[3]
 ```
 
 
 Prediction using the best model based on the metric
-
 ```{r}
 pred_rf <- predict(results[3], newdata = test) %>% unlist()
-summary(pred_rf)
 ```
 
 
-metric for random forest model predictions
+Metric for random forest model predictions
 ```{r}
 rmse <- sqrt(mean( (test$price - exp(pred_rf))  ^2) )
-rmae <- mean(abs(test$price - exp(pred_rf)))
+mae <- mean(abs(test$price - exp(pred_rf)))
 ```
 
 
@@ -373,6 +406,8 @@ table <- data.frame(
 knitr::kable(table,align = "lccccc",caption = "Random Forest Prediction Results")
 
 ```
+
+Summary: The model MAE is 3575.62. Meaning on average the Random Forest model prediction of the price of the car is off by $3575.62. 
 
 
 ```{r}
