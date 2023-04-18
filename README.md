@@ -1,1 +1,1 @@
-# Car_price_Randon_forest_MLR
+# Car price prediction using Randon Forest and associations of price with predictors using Multiple Linear Regression
