@@ -7,17 +7,18 @@ output: html_document
 
 Load packages
 
-```{r}
-pacman::p_load(tidyverse, car, DataExplorer, data.table, randomForest, missForest, glmnet, caret, doParallel, foreach, Metrics)
+```{r message=FALSE}
+pacman::p_load(tidyverse, car, DataExplorer, data.table, randomForest, missForest, glmnet, caret, doParallel, foreach, Metrics, cowplot, knitr)
 ```
 
 Read Car Price data.
+
 ```{r}
 df <- fread("./data/car_ad.csv")
 ```
 
-
 Convert character variables to factors
+
 ```{r}
 df1 <- df %>% mutate(
           car = as.factor(car),
@@ -29,16 +30,21 @@ df1 <- df %>% mutate(
 
 df1$engType <- fct_relevel(df1$engType, "Diesel", "Petrol","Other", "Gas")
 
+# set other to NA for engine type
+df1$engType[df1$engType == "Other"] <-  NA
+
 str(df1)
 ```
 
 Calculate the number of categories for each factor
+
 ```{r}
 lapply(df1,function(x) { length(levels(x))})
 df1
 ```
 
 Set empty values to NA for all factor variables
+
 ```{r}
 for(i in names(df1)){
   
@@ -50,16 +56,23 @@ for(i in names(df1)){
 ```
 
 Check for missing values in the data
+
 ```{r}
 plot_missing(df1)
+
+# copy & save the PNG file and close the device
+dev.copy(png, "./images/na_values.png")
+dev.off()
 ```
 
 Number of missing values by variable
+
 ```{r}
 lapply(df1,function(x) { length(which(is.na(x)))})
 ```
 
 Imputation of NA values using `missForest` package
+
 ```{r}
 rf_na <- missForest(df1[,-c(1,9)],
                     ntree = 100,
@@ -76,11 +89,13 @@ df2 <- rf_na$ximp
 ```
 
 verify missing values
+
 ```{r}
 plot_missing(df2)
 ```
 
-Remove price where car value is zero for this project. 
+Remove price where car value is zero for this project.
+
 ```{r}
 summary(df2)
 quantile(df2$price)
@@ -93,147 +108,208 @@ summary(df3)
 
 # Multiple Linear Regression
 
-Used Linear regression to find associations between the car price and predictors. 
+Used Linear regression to find associations between the car price and predictors.
 
 ## Exploratory data analysis
 
 Based on the scatter plot the car price is skewed to the right. (log transformation may be useful)
+
 ```{r}
 scatterplotMatrix(~price + mileage + engV, data = df3, col = "black")
+dev.copy(png, "./images/scatterplot.png")
+dev.off()
 
-df3 %>% 
-  ggplot(aes(body, price )) + 
-  geom_boxplot()
+body <- df3 %>% 
+  ggplot(aes(body, log(price) )) + 
+  geom_boxplot() + 
+  labs(x = "Car body type" , y= "log(Price)",
+  title ="Relation between the
+log of Price and car body")
 
 # engine type
-df3 %>% 
-  ggplot(aes(engV, log(price), fill = drive)) + 
-  geom_boxplot()
-```
+eng <- df3 %>% 
+  ggplot(aes(drive, log(price), fill = engType)) + 
+  geom_boxplot() + 
+  labs(fill = "Type of fuel ", x = "Drive type", y = "log(Price)", title ="Relation between the
+log of Price and Drive type")
 
+cowplot::plot_grid(body, eng)
+
+# copy & save the PNG file and close the device
+dev.copy(png, "./images/relation_log_price.png")
+dev.off()
+```
 
 ## Added Variables plots partial regression plot
 
 Loot for important predictors based on the avPlots.
+
 ```{r}
 fit <- lm(price ~ ., data = df3)
 summary(fit)
 avPlots(fit)
+# copy & save the PNG file and close the device
+dev.copy(png, "./images/avplots.png")
+dev.off()
 ```
 
 # Assumption of Multiple Linear Regression
 
-The assumptions fails. QQplot deviates from at the tail end.  
+The assumptions fails. QQplot deviates from at the tail end.
+
 ```{r}
 par(mfrow = c(1,2))
 plot(fit, which = 2, cex = .5)
 plot(fitted(fit1), rstandard(fit1),
 xlab="Fitted values", ylab="Standardized Residuals", cex = .5)
+dev.copy(png, "./images/assumption_model.png")
+dev.off()
 ```
+
 ## Transformations
 
-Used power transformation on predictors then response. 
+Used power transformation function on predictors then response.
 
 Note: Add small constant to `mileage` to use the power transformation since some values are zero.
+
 ```{r}
-pt <- powerTransform(cbind(df3$mileage+.001, df3$engV) ~ 1 )
+pt <- powerTransform(cbind(df3$mileage + 0.001, df3$engV) ~ 1 )
 summary(pt)
 ```
 
-
-Result: Optimal lambda is -0.07. However, used log transformation for easier interpretation. (optimal values is close to zero)
+Result: Optimal lambda is -0.05. However, used log transformation for easier interpretation. (optimal values is close to zero)
 
 Transformation the response `Price` by the log transformation.
+
 ```{r}
-engV <-  as.numeric(df3$engV)^(-0.5)
-powerTransform(df3$price ~ df3$body + sqrt(df3$mileage +0.001) + engV + df3$engType + df3$registration + df3$year + df3$drive ) %>% 
+engV1 <-  as.numeric(df3$engV)^(-0.5)
+powerTransform(df3$price ~ df3$body + sqrt(df3$mileage +0.001) + engV1 + df3$engType + df3$registration + df3$year + df3$drive ) %>% 
   summary()
 ```
 
 ```{r}
-fit1 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV + engType + registration + year + drive, data = df3)
+fit1 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV1 + engType + registration + year + drive, data = df3)
 summary(fit1)
 ```
 
 ## Assumptions of Transformed model
 
-Check for multicollinearity: VIF are less than 5 for all values. No issue with multicollinearity.
+Check for multicollinearity: VIF are less than 5 for all variables No issue with multicollinearity.
+
 ```{r}
-vif(fit1)
+car::vif(fit1)
 ```
 
 
-Standardize residuals vs year: no patterns by years
+Standardize residuals vs year plot: no patterns through out the years
 
 ```{r}
-plot(rstandard(fit1) ~ df3$year, cex = .5,
+plot(rstandard(fit1) ~ df3$year, cex = .8,
     xlab="Years",
     ylab="Standardized Residuals")
+
+dev.copy(png, "./images/residuals_year.png")
+dev.off()
 ```
 
 QQplot: Data points deviate at the end of tails
+
 ```{r}
 car::qqPlot(rstandard(fit1))
+dev.copy(png, "./images/qnorm_trans.png")
+dev.off()
 ```
 
-Check for outliers & leverage points: There are 5 bad leverage points.
+Check for outliers & leverage points: There are 7 bad leverage points.
+
 ```{r}
+hat <- hatvalues(fit1)
 n <- nrow(df3)
 p <- ncol(df3)
 plot(hatvalues(fit1), rstandard(fit1),
 xlab="Leverage", ylab="Standardized Residuals")
-abline(v = 4*(p+1)/n , lty = 2, lwd = 2, col = "red")
-abline(h = c(-4,4), lty = 2, lwd = 2, col = "blue")
+abline(v =  3*mean(hat) , lty = 2, lwd = 2, col = "red")
+abline(h = c(-6,6), lty = 2, lwd = 2, col = "blue")
+
+dev.copy(png, "./images/leverage_residuals.png")
+dev.off()
 ```
 
-
 Bad leverage points data.
+
 ```{r}
-df3[which(hatvalues(fit1) >4*(p+1)/n & abs(rstandard(fit1)) >4 ,)]
+df3[which(hatvalues(fit1) >3*mean(hat) & abs(rstandard(fit1)) >6 ,)]
 ```
 
 Cooks distance for influential points
+
 ```{r}
+hat <- hatvalues(fit1)
 cooks <- cooks.distance(fit1)
-index <- which(cooks > 4/ (n - p - 1))
+index <- which(cooks > 4/(n - p - 1) )
+
+# number of influential points
+length(unique(index))
+
 influenceIndexPlot(fit1,vars = c("hat", "Cook"),id = TRUE)
+
+dev.copy(png, "./images/cooks.png")
+dev.off()
 ```
 
-
-There are many influential points. Run model with and without influential data points.   
-
+There are many influential points. Run model with and without influential data points.
 
 Model with out influential points.
+
 ```{r}
 df4 <- df3[-index,]
-fit2 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV + engType + registration + year + drive, data = df4)
+
+engV1 <-  as.numeric(df4$engV)^(-0.5)
+
+fit2 <- lm(log(price) ~ body + sqrt(mileage +0.001) + engV1 + engType + registration + year + drive, data = df4)
 summary(fit2)
 ```
 
 ```{r}
-plot(rstandard(fit2) ~ df4$year, cex = .5,
+plot(rstandard(fit2) ~ df4$year, cex = .8,
     xlab="Years",
     ylab="Standardized Residuals")
+
+
+dev.copy(png, "./images/res_vs_years_no_infl.png")
+dev.off()
 ```
 
-QQplot: Data points deviate at the end of tails
+QQplot: Assumption is satisfied
+
 ```{r}
 car::qqPlot(rstandard(fit2))
+dev.copy(png, "./images/qqplot_no.png")
+dev.off()
+
+plot(rstandard(fit2) ~ fitted(fit2), cex = .8, 
+     xlab = "Fitted Values", ylab = "Standardize Residuals")
+dev.copy(png, "./images/fitted_residuals_no.png")
+dev.off()
+
 ```
 
 Check for outliers & leverage points: There are 5 bad leverage points.
+
 ```{r}
+hat <- hatvalues(fit2)
 n <- nrow(df4)
 p <- ncol(df4)
 plot(hatvalues(fit2), rstandard(fit2),
 xlab="Leverage", ylab="Standardized Residuals")
-abline(v = 4*(p+1)/n , lty = 2, lwd = 2, col = "red")
-abline(h = c(-4,4), lty = 2, lwd = 2, col = "blue")
+abline(v = 3*mean(hat) , lty = 2, lwd = 2, col = "red")
+abline(h = c(-6,6), lty = 2, lwd = 2, col = "blue")
+
+dev.copy(png, "./images/outliers_no.png")
+dev.off()
 ```
 
-
-
-Summary: Adjusted R-squared: 0.7044. About 70% of the variability can be explain by the model that contains all data compare to %76.55 without. Will used the first model since there is a difference in the coefficients and Adjusted R-squared.
+Summary: Adjusted R-squared: 0.7044. About 70% of the variability can be explain by the model that contains all data compare to %85.08  without. Will used the first model since there is a difference in the coefficients and Adjusted R-squared.
 
 Interpretations: The price of a car that uses Gas is 29.99% less, on average, than a car that uses diesel, when all other variables in the model are held constant.
 
@@ -245,10 +321,7 @@ summary(fit1)
 8.569e-01 *100 # drive
 ```
 
-
-
 # Model Predictions
-
 
 Train and test using lasso regression.
 
@@ -258,7 +331,6 @@ train_index <- createDataPartition(df3$price, p = .7, list = FALSE)
 train <- df3[train_index,]
 test <- df3[-train_index,]
 ```
-
 
 ```{r}
 
@@ -274,12 +346,11 @@ model <- train(log(price) ~ body + sqrt(mileage + 0.001) + engV +
                       tuneGrid = tune)
 ```
 
-
 Prediction results using lasso model on test data
+
 ```{r}
 pred <- predict(model , newdata = test)
 ```
-
 
 ```{r}
 rmse <- sqrt(mean((test$price - exp(pred) )^2)) 
@@ -293,14 +364,14 @@ knitr::kable(table,align = "lccccc",caption = "Random Forest Prediction Results"
 
 ```
 
-Summary: The model has MAE of 6193.93. Meaning on average the model prediction of the price of the car is off by $6193.93. 
+Summary: The model has MAE of 6193.93. Meaning on average the model prediction of the price of the car is off by \$6193.93.
 
-Note: MAE is less sensitive to outliers than other metrics like RMSE ($14494.98)
-
+Note: MAE is less sensitive to outliers than other metrics like RMSE (\$14494.98)
 
 ## train and test using DoParallel
 
 Train and test splits
+
 ```{r}
 set.seed(1)
 train_index <- createDataPartition(df3$price, p = .7, list = FALSE)
@@ -308,15 +379,15 @@ train <- df3[train_index,]
 test <- df3[-train_index,]
 ```
 
-
 Set up to use DoParallel.
+
 ```{r}
 cl <- makeCluster(detectCores())
 registerDoParallel(cl)
 ```
 
-
 Will run multiple models (glmnet, glm, rf) at the same time on the training data.
+
 ```{r}
 # define models
 algorithms <- list(
@@ -360,13 +431,13 @@ results <- foreach(alg = algorithms ,.packages = "caret", .combine = "rbind") %d
     model = model,
     RMSE = min(model$results$RMSE),
     R2 = max(model$results$Rsquared),
-    RMAE = min(model$results$MAE) )
+    MAE = min(model$results$MAE) )
   } else {
     model_metrics <- list(
     model = coef(model$finalModel),
     RMSE = min(model$results$RMSE),
     R2 = max(model$results$Rsquared),
-    RMAE = min(model$results$MAE)
+    MAE = min(model$results$MAE)
   )
   }
   
@@ -380,18 +451,19 @@ results <- foreach(alg = algorithms ,.packages = "caret", .combine = "rbind") %d
 ```
 
 Random forest has the best metric on the training data
+
 ```{r}
 results[3]
 ```
 
-
 Prediction using the best model based on the metric
+
 ```{r}
 pred_rf <- predict(results[3], newdata = test) %>% unlist()
 ```
 
-
 Metric for random forest model predictions
+
 ```{r}
 rmse <- sqrt(mean( (test$price - exp(pred_rf))  ^2) )
 mae <- mean(abs(test$price - exp(pred_rf)))
@@ -407,16 +479,15 @@ knitr::kable(table,align = "lccccc",caption = "Random Forest Prediction Results"
 
 ```
 
-Summary: The model MAE is 3575.62. Meaning on average the Random Forest model prediction of the price of the car is off by $3575.62. 
+Summary: The model MAE is 3575.62. Meaning on average the Random Forest model prediction of the price of the car is off by \$3575.62.
 
- 
 ```{r}
 # Stop the parallel backend
 stopCluster(cl)
 ```
 
-
 Run after using DoParallel
+
 ```{r}
 unregister_dopar <- function() {
   env <- foreach:::.foreachGlobals
@@ -425,5 +496,3 @@ unregister_dopar <- function() {
 
 unregister_dopar()
 ```
-
-
