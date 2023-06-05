@@ -2,7 +2,7 @@
 
 In this project, first we look at the associations of the price of vehicles with predictors using Multiple Linear Regression. Secondly, we select the best prediction model to predict the car price. (Final prediction model is Random Forest)
 
-Dataset can be found [here](https://www.kaggle.com/datasets/antfarol/car-sale-advertisement).
+Dataset can be found [here](https://www.kaggle.com/datasets/antfarol/car-sale-advertisements).
 
 * car: manufacturer brand
 * price: seller’s price in advertisement (in USD)
